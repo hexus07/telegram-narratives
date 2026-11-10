@@ -1,8 +1,4 @@
 """One-time login via QR code (no confirmation code needed).
-
-Run: python login_qr.py
-Then on your phone: Telegram -> Settings -> Devices -> Link Desktop Device -> scan the QR.
-After that scraper.py reuses the saved session.
 """
 import asyncio
 import getpass

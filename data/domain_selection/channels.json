@@ -1,0 +1,16 @@
+[
+  {"channel": "MFARussia", "language": "en", "domain": "war"},
+  {"channel": "worldnewschannel3", "language": "en", "domain": "war"},
+  {"channel": "KyivIndependent_official", "language": "en", "domain": "war"},
+  {"channel": "Visegrad_24", "language": "en", "domain": "migrants"},
+  {"channel": "Graham_Hodsdon10", "language": "en", "domain": "migrants"},
+  {"channel": "SlovjanskaInformacja", "language": "en", "domain": "migrants"},
+  {"channel": "MiddleEastEye_TG", "language": "en", "domain": "migrants"},
+  {"channel": "trtworld", "language": "en", "domain": "migrants"},
+  {"channel": "AJENews_Official", "language": "en", "domain": "migrants"},
+  {"channel": "putingers_cat", "language": "en", "domain": "war"},
+  {"channel": "entre_guerras", "language": "es/en", "domain": "war"},
+  {"channel": "p0lithub", "language": "en", "domain": "war"},
+  {"channel": "ukr_leaks_eng", "language": "en", "domain": "war"},
+  {"channel": "warriorsukrainian", "language": "en", "domain": "war"}
+]

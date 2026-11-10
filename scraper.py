@@ -12,7 +12,6 @@ from telethon import TelegramClient
 
 load_dotenv()
 
-# Keywords per domain (the "domain" value in channels.json).
 KEYWORDS = {
     "war": None,
     "migrants": [
@@ -44,7 +43,6 @@ def excel_separator():
 
 
 def excel_safe(text):
-    # Excel treats cells starting with = + - @ as formulas (e.g. "- item" -> #NAME?)
     return " " + text if text[:1] in ("=", "+", "-", "@") else text
 
 
@@ -76,7 +74,6 @@ def matched_keywords(text, keywords):
     With no keywords, every message passes (returns None)."""
     if not keywords:
         return None
-    # match at the start of a word: "deport" finds "deportation", but "ice" does not find "police"
     return [k for k in keywords if re.search(r"\b" + re.escape(k), text, re.IGNORECASE)]
 
 
@@ -123,7 +120,7 @@ def show(i, total, username, cfg, msg, hits):
 
 
 async def ask():
-    # input() runs in a thread so the Telegram connection stays alive while you read
+    # input() runs in a thread so the Telegram connection stays alive
     while True:
         answer = (await asyncio.to_thread(input, "Add? [y]es / [n]o / skip / quit: ")).strip().lower()
         if answer in ("y", "yes", "n", "no", "skip", "quit"):
@@ -153,7 +150,6 @@ async def main():
     added, failed = 0, []
 
     async with TelegramClient(args.session, api_id, api_hash, flood_sleep_threshold=60) as client:
-        # utf-8-sig writes the BOM (so Excel shows Cyrillic) only when the file is new
         writer = csv.DictWriter(f, fieldnames=COLUMNS, delimiter=sep, restval="")
         if f.tell() == 0:
             writer.writeheader()
@@ -185,7 +181,7 @@ async def main():
                         "url": f"https://t.me/{username}/{msg.id}",
                         "text": excel_safe(msg.message),
                     })
-                    f.flush()  # saved immediately, nothing is lost if you stop
+                    f.flush()  # saved immediately
                     added += 1
                 elif answer in ("skip", "quit"):
                     break

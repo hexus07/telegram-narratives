@@ -1,18 +1,4 @@
-"""Label narratives in narrative_selection.csv with the URW taxonomy.
-
-Each post is printed with its previous labels. Type taxonomy IDs separated by spaces or commas:
-the FIRST ID is the dominant narrative, the rest follow in order of appearance in the text.
-
-  F2.3 F1.1             -> narrative = F2.3; F1.1, dominant = F2.3
-  F4.3 other <note>     -> "other" takes the rest of the line as its note, so write it last
-  none                  -> no narrative
-  Enter                 -> accept the suggestion (shown when the old label maps to the taxonomy)
-  ?                     -> show the taxonomy
-  skip / quit
-
-The file is saved after every answer, so you can stop and continue later.
-Posts already labeled with taxonomy IDs are skipped (use --redo to see them again).
-"""
+"""Tool for faster annotating posts with narratives and entity roles """
 import argparse
 import csv
 import os
@@ -24,137 +10,150 @@ from pathlib import Path
 import openpyxl
 
 HERE = Path(__file__).parent
+CSV_PATH = HERE / "data" / "annotation" / "message_annotation.csv"
+TAXONOMY_PATH = HERE / "data" / "annotation" / "narrative_taxonomy.xlsx"
 NARR_COL = "narrative"
 DOM_COL = "dominat Naratiive"
-NEW_ID = re.compile(r"^[FM]\d+\.\d+$", re.IGNORECASE)  # F = war, M = migration
-ID_PREFIX = {"war": "f", "migrants": "m"}
-OLD_ID = re.compile(r"^(\d+\.\d+|11\.x)\b")
+ROLE_COL = "Entity roles"
+ID_PREFIX = {"war": "F", "migrants": "M"}
+ROLES = {"a": "Protagonist", "b": "Antagonist", "c": "Innocent"}
 
 
-def parse_args():
-    p = argparse.ArgumentParser(description="Label narratives with the URW taxonomy.")
-    p.add_argument("--csv", default=HERE / "narrative_selection.csv", help="CSV to label")
-    p.add_argument("--taxonomy", default=HERE / "narrative_taxonomy_URW_v1_draft.xlsx", help="Taxonomy workbook")
-    p.add_argument("--domain", default="war", help="Only posts of this domain: war (F IDs) or migrants (M IDs)")
-    p.add_argument("--redo", action="store_true", help="Also show posts that already have taxonomy labels")
-    return p.parse_args()
+class Skip(Exception):
+    pass
+
+
+class Quit(Exception):
+    pass
+
+
+def prompt(text):
+    answer = input(text).strip()
+    if answer.lower() == "skip":
+        raise Skip
+    if answer.lower() == "quit":
+        raise Quit
+    return answer
+
+
+def confirm():
+    return prompt("Save? [y]/n: ").lower() in ("", "y", "yes")
 
 
 def load_taxonomy(path):
-    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-    taxonomy = {}  # lower-case ID -> row
-    for row in list(wb["taxonomy"].iter_rows(values_only=True))[1:]:
+    sheet = openpyxl.load_workbook(path, read_only=True, data_only=True)["taxonomy"]
+    taxonomy = {}  # lower-case ID -> {id, sub, full}
+    for row in list(sheet.iter_rows(values_only=True))[1:]:
         if row[0]:
-            tid, _, sub, full, definition, direction = (str(c or "").strip() for c in row[:6])
-            taxonomy[tid.lower()] = {"id": tid, "sub": sub, "full": full, "definition": definition, "direction": direction}
-    mapping = {}  # old SemEval ID -> (new ID, status)
-    for row in list(wb["semeval_mapping"].iter_rows(values_only=True))[1:]:
-        if row[0] and row[2]:
-            mapping[str(row[0]).strip()] = (str(row[2]).strip(), str(row[3] or "").strip())
-    return taxonomy, mapping
+            tid = str(row[0]).strip()
+            taxonomy.setdefault(tid.lower(), {"id": tid, "sub": str(row[2] or "").strip(), "full": str(row[3] or "").strip()})
+    return taxonomy
 
 
-def show_taxonomy(taxonomy):
+def show_taxonomy(taxonomy, prefix):
     print("\nTaxonomy:")
     for t in taxonomy.values():
-        print(f"  {t['id']:<6} {t['sub']}  [{t['direction']}]")
+        if t["id"].startswith(prefix) or t["id"].lower() in ("other", "none"):
+            print(f"  {t['id']:<6} {t['sub']}")
 
 
-def labels_of(value):
-    # Split only before an ID: some full labels contain ";" themselves (e.g. F5.1)
-    parts = re.split(r";\s*(?=[FM]\d+\.\d+\b|none\b|Other\b|\d+\.\d+\b|11\.x\b)", value)
-    return [p.strip() for p in parts if p.strip()]
+def ids_of(value):
+    """'F2.3 Discrediting...; F1.1 Responsibility...' -> ['F2.3', 'F1.1']"""
+    # Split only before an ID
+    parts = [p.strip() for p in re.split(r";\s*(?=[FM]\d+\.\d+\b|none\b|Other\b)", value) if p.strip()]
+    return [p if p.startswith("Other") else p.split()[0] for p in parts]
 
 
-def is_done(row):
-    # Done = a dominant label is set and every stored label is a taxonomy ID, Other or none
-    parts = labels_of(row[NARR_COL])
-    return bool(parts and row[DOM_COL].strip()) and all(
-        NEW_ID.match(p.split()[0]) or p.lower() == "none" or p.startswith("Other") for p in parts
-    )
+def narratives_done(row):
+    ids = ids_of(row[NARR_COL])
+    return bool(ids and row[DOM_COL].strip()) and all(
+        re.fullmatch(r"[FM]\d+\.\d+", i) or i == "none" or i.startswith("Other") for i in ids)
 
 
-def suggest(row, mapping):
-    """Translate the old labels to taxonomy IDs where the mapping sheet allows it."""
-    ids, notes = [], []
-    for part in labels_of(row[DOM_COL]) + labels_of(row[NARR_COL]):  # dominant first
-        first = part.split()[0]
-        if NEW_ID.match(first):
-            new = first.upper()
-        elif OLD_ID.match(part):
-            old = OLD_ID.match(part).group(1)
-            if old not in mapping:
-                continue
-            new, status = mapping[old]
-            note = f"{old} -> {new} ({status})"
-            if note not in notes:
-                notes.append(note)
-        elif part.lower() in ("none", "no"):
-            new = "none"
-        else:
-            continue
-        if new not in ids:
-            ids.append(new)
-    return ids, notes
+def roles_done(row):
+    value = row[ROLE_COL].strip()
+    if value.lower() == "none":
+        return True
+    pairs = [p.rpartition(":") for p in value.split(";")]
+    return bool(value) and all(sep and role.strip() in ROLES.values() for _, sep, role in pairs)
 
 
-def show(i, total, row, suggestion, notes):
+def show(i, total, row):
     print("\n" + "=" * 70)
     print(f"[{i}/{total}]  @{row['channel']}   ({row['domain']}, {row['language']}, side: {row['side']})")
     print(f"{row['date']}   {row['url']}")
     print("-" * 70)
     print(row["text"].strip())
     print("-" * 70)
-    print("Previous narrative:", row[NARR_COL] or "-")
-    print("Previous dominant: ", row[DOM_COL] or "-")
-    if suggestion:
-        print("Suggestion:        ", " ".join(suggestion), f"  ({'; '.join(notes)})" if notes else "")
+    dominant = ids_of(row[DOM_COL])
+    print("Narratives:", " ".join(ids_of(row[NARR_COL])) or "-", f"  (dominant: {dominant[0]})" if dominant else "")
+    print("Roles:     ", row[ROLE_COL] or "-")
 
 
-def parse_answer(answer, taxonomy):
+def parse_narratives(answer, taxonomy, prefix):
     """Return the list of full labels (first = dominant), or an error message."""
     match = re.search(r"\bother\b[:\s]*(.*)$", answer, re.IGNORECASE)
     head = answer[:match.start()] if match else answer
-    tokens = [t for t in re.split(r"[\s,;]+", head) if t]
     labels = []
-    for t in tokens:
+    for t in re.split(r"[\s,;]+", head):
+        if not t:
+            continue
         if t.lower() == "none":
             labels.append("none")
-        elif t.lower() in taxonomy:
+        elif t.lower() in taxonomy and t.upper().startswith(prefix):
             labels.append(taxonomy[t.lower()]["full"])
         else:
-            return f"Unknown ID: {t}"
+            return f"Unknown ID for this domain: {t}"
     if match:
         note = match.group(1).strip()
         labels.append(f"Other ({note})" if note else "Other")
-    if "none" in labels and len(labels) > 1:
-        return "'none' cannot be combined with other labels."
     if not labels:
         return "Type at least one ID."
+    if "none" in labels and len(labels) > 1:
+        return "'none' cannot be combined with other labels."
     return list(dict.fromkeys(labels))
 
 
-def ask(taxonomy, suggestion):
+def ask_narratives(row, taxonomy):
+    """Return the new labels, or None to keep the current ones."""
+    prefix = ID_PREFIX.get(row["domain"], "")
     while True:
-        answer = input("Narratives (first = dominant), Enter = suggestion, ? / skip / quit: ").strip()
+        answer = prompt("Narratives (first = dominant), Enter = keep, ? = taxonomy: ")
         if answer == "?":
-            show_taxonomy(taxonomy)
+            show_taxonomy(taxonomy, prefix)
             continue
-        if answer.lower() in ("skip", "quit"):
-            return answer.lower()
         if not answer:
-            if not suggestion:
-                print("No suggestion for this post - type the IDs.")
-                continue
-            answer = " ".join(suggestion)
-        result = parse_answer(answer, taxonomy)
-        if isinstance(result, str):
-            print(result)
+            if narratives_done(row):
+                return None
+            print("This post has no labels yet - type the IDs.")
             continue
-        print("  narrative:", "; ".join(result))
-        print("  dominant: ", result[0])
-        if input("Save? [y]/n: ").strip().lower() in ("", "y", "yes"):
-            return result
+        labels = parse_narratives(answer, taxonomy, prefix)
+        if isinstance(labels, str):
+            print(labels)
+            continue
+        print("  ->", " ".join(ids_of("; ".join(labels))), f"  (dominant: {ids_of(labels[0])[0]})")
+        if confirm():
+            return labels
+
+
+def ask_roles():
+    """Ask for entities first, then a role for each one. Return the value for ROLE_COL."""
+    while True:
+        print("Entities: type one and press Enter, empty line = done.")
+        entities = []
+        while name := prompt(f"  entity {len(entities) + 1}: "):
+            name = " ".join(re.sub(r"[:;]", " ", name).split())  # ":" and ";" separate the stored value
+            if name not in entities:
+                entities.append(name)
+        pairs = []
+        for name in entities:
+            while (key := prompt(f"  {name}:  a) Protagonist  b) Antagonist  c) Innocent: ").lower()) not in ROLES:
+                print("  Type a, b or c.")
+            pairs.append(f"{name}:{ROLES[key]}")
+        value = "; ".join(pairs) or "none"
+        print("  ->", value)
+        if confirm():
+            return value
 
 
 def save(path, fieldnames, rows, sep):
@@ -171,20 +170,21 @@ def save(path, fieldnames, rows, sep):
             if sys.stdin.isatty():
                 input(f"{path} is open in another program (Excel?). Close it and press Enter to retry.")
             else:
-                # Answers come from a pipe: wait instead of reading a line, so they don't shift
-                time.sleep(1)
+                time.sleep(1)  # answers come from a pipe: don't read a line, or they shift
     sys.exit(f"Could not save {path}: the file stays locked.")
 
 
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
-    args = parse_args()
-    taxonomy, mapping = load_taxonomy(args.taxonomy)
-    # Keep only this domain's IDs (F for war, M for migration) plus Other and none
-    prefix = ID_PREFIX.get(args.domain)
-    if prefix:
-        taxonomy = {k: v for k, v in taxonomy.items() if k.startswith(prefix) or k in ("other", "none")}
+    p = argparse.ArgumentParser(description="Annotate narratives or entity roles.")
+    p.add_argument("mode", nargs="?", choices=["narratives", "roles"], default="narratives")
+    p.add_argument("--domain", choices=list(ID_PREFIX), help="Only this domain (default: both)")
+    p.add_argument("--redo", action="store_true", help="Also show posts that are already annotated")
+    p.add_argument("--csv", type=Path, default=CSV_PATH)
+    p.add_argument("--taxonomy", type=Path, default=TAXONOMY_PATH)
+    args = p.parse_args()
 
+    taxonomy = load_taxonomy(args.taxonomy)
     with open(args.csv, encoding="utf-8-sig") as f:
         header = f.readline()
         sep = ";" if header.count(";") > header.count(",") else ","
@@ -192,26 +192,31 @@ def main():
         reader = csv.DictReader(f, delimiter=sep)
         fieldnames, rows = reader.fieldnames, list(reader)
 
-    todo = [r for r in rows if r["domain"] == args.domain and (args.redo or not is_done(r))]
-    done_before = sum(1 for r in rows if r["domain"] == args.domain and is_done(r))
-    print(f"{args.csv}: {len(todo)} {args.domain} posts to label ({done_before} already labeled).")
-    show_taxonomy(taxonomy)
+    done = narratives_done if args.mode == "narratives" else roles_done
+    posts = [r for r in rows if not args.domain or r["domain"] == args.domain]
+    todo = [r for r in posts if args.redo or not done(r)]
+    print(f"{args.mode}: {len(todo)} posts to show, {sum(map(done, posts))} of {len(posts)} already done.")
 
-    labeled = 0
-    for i, row in enumerate(todo, 1):
-        suggestion, notes = suggest(row, mapping)
-        show(i, len(todo), row, suggestion, notes)
-        result = ask(taxonomy, suggestion)
-        if result == "quit":
-            break
-        if result == "skip":
-            continue
-        row[NARR_COL] = "; ".join(result)
-        row[DOM_COL] = result[0]
-        save(args.csv, fieldnames, rows, sep)
-        labeled += 1
-
-    print(f"\nLabeled {labeled} posts in {args.csv}")
+    saved = 0
+    try:
+        for i, row in enumerate(todo, 1):
+            show(i, len(todo), row)
+            try:
+                if args.mode == "narratives":
+                    labels = ask_narratives(row, taxonomy)
+                    if labels is None:
+                        continue
+                    row[NARR_COL] = "; ".join(labels)
+                    row[DOM_COL] = labels[0]
+                else:
+                    row[ROLE_COL] = ask_roles()
+            except Skip:
+                continue
+            save(args.csv, fieldnames, rows, sep)
+            saved += 1
+    except (Quit, KeyboardInterrupt, EOFError):
+        pass
+    print(f"\nSaved {saved} posts to {args.csv}")
 
 
 if __name__ == "__main__":
